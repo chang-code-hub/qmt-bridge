@@ -52,7 +52,7 @@ SAFETY_OVERLAP_DAYS = 1
 # 日线数据应有多年历史；分钟数据 xtquant 通常只保留近 1 年，检查远年无意义。
 # 0 = 跳过检查（不会因"缺历史"触发全量重下）。
 KLINE_HISTORY_CHECK_YEARS: dict[str, int] = {
-    "1d": 3,
+    "1d": 5,
     "1m": 0, "5m": 0, "15m": 0, "30m": 0, "60m": 0,
 }
 
@@ -64,6 +64,10 @@ FINANCIAL_MIN_RECORDS = 8
 
 # 默认板块
 DEFAULT_SECTORS = "沪深A股,沪深ETF,沪深指数"
+
+# 下载模式
+# 1 = supply_history_data2, 2 = download_history_data2
+DOWNLOAD_MODE = 1
 
 
 # ── 结果数据类 ────────────────────────────────────────────────
@@ -179,14 +183,15 @@ def download_single_kline(
     incrementally: bool | None = None,
     timeout: float | None = None,
 ) -> str:
-    """直接调用 client.supply_history_data2() 下载单只股票 K 线。
+    """根据 DOWNLOAD_MODE 下载单只股票 K 线。
 
-    绕过 xtquant.download_history_data2 的 bug：
-    当 result=True（数据已缓存）时，xtquant 的轮询循环会永远挂起，
-    因为回调永远不会被触发。
+    DOWNLOAD_MODE = 1: 直接调用 client.supply_history_data2()，绕过
+        xtquant.download_history_data2 的 bug（当 result=True 时回调不触发
+        导致挂起）。
+    DOWNLOAD_MODE = 2: 调用 xtdata.download_history_data2()。
 
     Args:
-        client: xtdata.get_client() 返回的 C++ 客户端对象。
+        client: xtdata.get_client() 返回的 C++ 客户端对象（mode 1 使用）。
         code: 股票代码，如 "000001.SZ"。
         period: K 线周期，如 "1d"/"1m"/"5m"。
         start_time: 开始时间，格式 "YYYYMMDD"。
@@ -201,6 +206,21 @@ def download_single_kline(
         timeout = STOCK_TIMEOUT.get(period, 10)
     if incrementally is None:
         incrementally = not bool(start_time)
+
+    if DOWNLOAD_MODE == 2:
+        try:
+            xtdata.download_history_data2(
+                [code], period, start_time, end_time,
+                incrementally=incrementally,
+            )
+            return "ok"
+        except Exception as exc:
+            err_msg = str(exc)
+            if "连接断开" in err_msg:
+                return "disconnected"
+            return f"error: {err_msg}"
+
+    # DOWNLOAD_MODE == 1
     param = {"incrementally": incrementally}
     bson_param = _BSON_.BSON.encode(param)
 
