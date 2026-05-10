@@ -126,10 +126,10 @@ def get_connection_status():
         connected: 布尔值，表示是否已连接。
         error: 连接异常时的错误信息（可选）。
 
-    底层调用: xtdata.get_client().get_connect_status()
+    底层调用: xtdata.get_client().is_connected()
     """
     try:
-        status = xtdata.get_client().get_connect_status()
+        status = xtdata.get_client().is_connected()
         return {"connected": status}
     except Exception as e:
         return {"connected": False, "error": str(e)}
