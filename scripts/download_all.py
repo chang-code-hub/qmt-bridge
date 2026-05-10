@@ -625,6 +625,15 @@ def download_kline_v2(
     results: dict[str, dict[str, int]] = {}
     client = xtdata.get_client()
 
+    # 以市场最后交易日为基准判断是否需要增量；避免周末/节假日把本地缓存
+    # 误判为"落后 N 天"。A 股 SH/SZ/BJ 共享同一交易日历，查 SH 即可。
+    try:
+        last_trade_ts = xtdata.get_market_last_trade_date("SH")
+        last_trade_date = datetime.fromtimestamp(last_trade_ts / 1000).strftime("%Y%m%d")
+    except Exception as exc:
+        logger.warning("获取市场最后交易日失败，回退到今天: %s", exc)
+        last_trade_date = datetime.now().strftime("%Y%m%d")
+
     for period in periods:
         effective_timeout = STOCK_TIMEOUT.get(period, 10)
         tqdm.write(f"  周期 {period} 单只超时: {effective_timeout}s")
@@ -632,6 +641,7 @@ def download_kline_v2(
 
         # 年度模式不重试：失败的股票重跑命令会自动跳过已缓存数据
         effective_retries = 0 if since_year is not None else max_retries
+        n_fresh = 0  # 已最新缓存、跳过下载的股票数（仅模式 C 会更新）
 
         if since_year is not None:
             # 模式 A: 年度分段下载 (--since)
@@ -649,7 +659,6 @@ def download_kline_v2(
             incrementally = True
             tqdm.write(f"\n探测 {period} 本地缓存...")
             local_dates = probe_local_dates(stocks, period)
-            today_str = datetime.now().strftime("%Y%m%d")
 
             # ── 历史完整性检查 ──
             # 有缓存但可能缺少历史年份的股票（如之前只跑了 --since 2025），
@@ -675,6 +684,13 @@ def download_kline_v2(
                         logger.warning("历史完整性探测失败: %s", exc)
                 incomplete_stocks = set(stocks_with_cache) - has_history
 
+            # 已包含最后交易日的缓存视为最新，跳过下载（仅适用于历史完整的股票）
+            fresh_stocks = {
+                s for s in stocks_with_cache
+                if s not in incomplete_stocks and local_dates[s] >= last_trade_date
+            }
+            need_download = [s for s in stocks if s not in fresh_stocks]
+
             # 按缺口天数降序排列：无缓存 > 历史不完整 > 缓存最旧 > 缓存最新
             def _gap_sort_key(s: str) -> int:
                 if s not in local_dates:
@@ -682,9 +698,9 @@ def download_kline_v2(
                 if s in incomplete_stocks:
                     return 999998  # 有缓存但历史不完整
                 d = local_dates[s]
-                return (datetime.strptime(today_str, "%Y%m%d") - datetime.strptime(d, "%Y%m%d")).days
-            sorted_stocks = sorted(stocks, key=_gap_sort_key, reverse=True)
-            # 每只股票用自己精确的 start_time
+                return (datetime.strptime(last_trade_date, "%Y%m%d") - datetime.strptime(d, "%Y%m%d")).days
+            sorted_stocks = sorted(need_download, key=_gap_sort_key, reverse=True)
+            # 每只股票用自己精确的 start_time，统一下载到最后交易日
             date_groups = []
             for s in sorted_stocks:
                 d = local_dates.get(s)
@@ -695,26 +711,30 @@ def download_kline_v2(
                 else:
                     # 无缓存 或 历史不完整 → 全量下载
                     st = ""
-                date_groups.append((st, "", [s]))
+                date_groups.append((st, last_trade_date, [s]))
             # 打印摘要
+            n_fresh = len(fresh_stocks)
             n_no_cache = sum(1 for s in sorted_stocks if s not in local_dates)
             n_incomplete = len(incomplete_stocks)
-            n_ok = len(sorted_stocks) - n_no_cache - n_incomplete
+            n_need_incr = len(sorted_stocks) - n_no_cache - n_incomplete
+            tqdm.write(f"  基准日期: {last_trade_date}")
+            if n_fresh:
+                tqdm.write(f"  · {n_fresh} 只已最新 (跳过)")
             if n_no_cache:
                 tqdm.write(f"  · {n_no_cache} 只无缓存 (全量下载)")
             if n_incomplete:
                 tqdm.write(f"  · {n_incomplete} 只缺少历史数据 (缺 {datetime.now().year - check_years} 年, 全量重下)")
-            if n_ok:
+            if n_need_incr:
                 ok_dates = [local_dates[s] for s in sorted_stocks if s in local_dates and s not in incomplete_stocks]
                 if ok_dates:
-                    tqdm.write(f"  · {n_ok} 只历史完整 (最旧 {min(ok_dates)}, 最新 {max(ok_dates)}, 增量更新)")
+                    tqdm.write(f"  · {n_need_incr} 只历史完整 (最旧 {min(ok_dates)}, 最新 {max(ok_dates)}, 增量更新)")
 
         n_date_groups = len(date_groups)
 
-        # 按组逐只下载
+        # 按组逐只下载（已最新缓存的股票视为成功）
         total_stocks = sum(len(g) for _, _, g in date_groups)
         pbar = tqdm(total=total_stocks, desc=f"K线 {period}", unit="只")
-        total_ok = 0
+        total_ok = n_fresh
         total_fail = 0
         total_to = 0
         interrupted = False
