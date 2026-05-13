@@ -290,6 +290,20 @@ class SMTQueryRequest(BaseModel):
 # 公式/模型计算模型
 # ---------------------------------------------------------------------------
 
+class FactorComputeRequest(BaseModel):
+    """手动触发因子计算请求。
+
+    K 线周期由因子自身的 ``required_period()`` 决定，无需传入。
+    """
+    factor_name: str
+    stock_codes: list[str] = Field(default=[], alias="stocks")
+    start_time: str = ""
+    end_time: str = ""
+    years: int = 0
+
+    model_config = {"populate_by_name": True}
+
+
 class CallFormulaRequest(BaseModel):
     """单只股票公式计算请求。"""
     formula_name: str

@@ -33,6 +33,10 @@ from .downloader import (
     download_kline_incremental,
     get_stock_list,
 )
+from datetime import datetime, timedelta
+
+from .factors.compute import compute_all_registered_factors
+from .factors.db import make_engine
 
 logger = logging.getLogger("qmt_bridge")
 
@@ -148,22 +152,99 @@ async def _run_financial_incremental(
         state.set_running(task_key, False)
 
 
+async def _run_factor_computation(
+    state: DownloadSchedulerState,
+    settings: Settings,
+) -> None:
+    """在线程池中执行因子计算。
+
+    factor_names 为空字符串时跳过；为 "*" 时计算全部；为逗号分隔列表时计算指定因子。
+    """
+    task_key = "factor"
+    if state.is_running(task_key):
+        logger.warning("因子计算上一轮未完成，跳过")
+        return
+
+    # factor_names 为空 → 关闭因子计算
+    if not settings.factor_names:
+        return
+
+    loop = asyncio.get_event_loop()
+
+    try:
+        stocks = await loop.run_in_executor(
+            None, lambda: get_stock_list(settings.factor_sectors),
+        )
+    except Exception:
+        logger.exception("因子计算: 获取股票列表失败")
+        return
+
+    if not stocks:
+        logger.warning("因子计算: 股票列表为空，跳过")
+        return
+
+    # 解析要计算的因子列表
+    names_str = settings.factor_names.strip()
+    if names_str == "*":
+        factor_names = None  # 计算全部
+    else:
+        factor_names = [n.strip() for n in names_str.split(",") if n.strip()]
+
+    # 解析时间范围
+    start_time = ""
+    if settings.factor_years > 0:
+        dt = datetime.now() - timedelta(days=settings.factor_years * 365)
+        start_time = dt.strftime("%Y%m%d")
+
+    logger.info(
+        "因子计算开始: 板块=%s, 股票=%d只, 因子=%s, 起始=%s",
+        settings.factor_sectors,
+        len(stocks),
+        names_str if factor_names is None else ",".join(factor_names),
+        start_time or "不限",
+    )
+
+    state.set_running(task_key, True)
+    try:
+        engine = make_engine(settings)
+        result = await loop.run_in_executor(
+            None,
+            lambda: compute_all_registered_factors(
+                engine, stocks, factor_names=factor_names, start_time=start_time
+            ),
+        )
+        state.set_result(task_key, result)
+        total_success = sum(r.get("success", 0) for r in result.values())
+        total_failed = sum(r.get("failed", 0) for r in result.values())
+        logger.info(
+            "因子计算完成: 成功=%d, 失败=%d, 详情=%s",
+            total_success,
+            total_failed,
+            {k: f"{v['success']}/{v['total']}" for k, v in result.items()},
+        )
+    except Exception:
+        logger.exception("因子计算失败")
+    finally:
+        state.set_running(task_key, False)
+
+
 async def scheduler_loop(
     state: DownloadSchedulerState,
     settings: Settings,
 ) -> None:
     """预下载调度主循环。
 
-    启动时立即执行一轮全部任务（基础数据 + K 线增量 + 财务增量），
+    启动时立即执行一轮全部任务（基础数据 + K 线增量 + 财务增量 + 因子计算），
     之后每隔 24 小时重复执行。
 
     此协程应在应用启动时作为后台任务启动，生命周期与服务进程一致。
     """
     logger.info(
-        "定时下载调度器已启动 (K线=%s 周期=%s, 财务=%s)",
+        "定时下载调度器已启动 (K线=%s 周期=%s, 财务=%s, 因子=%s)",
         settings.scheduler_kline_enabled,
         settings.scheduler_kline_periods,
         settings.scheduler_financial_enabled,
+        settings.factor_names or "关闭",
     )
 
     try:
@@ -184,6 +265,13 @@ async def scheduler_loop(
                     await _run_financial_incremental(state, settings)
                 except Exception:
                     logger.exception("财务增量下载调度异常")
+
+            # 4. 因子计算（在 K 线数据下载完成后执行）
+            if settings.factor_names:
+                try:
+                    await _run_factor_computation(state, settings)
+                except Exception:
+                    logger.exception("因子计算调度异常")
 
             # 等待 24 小时后再次执行
             await asyncio.sleep(86400)

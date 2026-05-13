@@ -34,6 +34,8 @@ server = [
     "uvicorn[standard]>=0.20",
     "pandas>=1.5",
     "numpy>=1.23",
+    "sqlalchemy>=2.0",
+    "psycopg2-binary>=2.9",
 ]
 pandas = ["pandas>=1.5"]
 ws = ["websockets>=11.0"]

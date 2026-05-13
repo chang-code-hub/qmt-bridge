@@ -197,3 +197,28 @@ def _financial_data_to_records(data: dict) -> dict:
                     stock_data[table_name] = []
         result[stock] = stock_data
     return result
+
+
+import re
+
+_STOCK_CODE_RE = re.compile(r"^(SZ|SH|BJ)(\d{6})$")
+
+
+def normalize_stock_code(code: str) -> str:
+    """统一股票代码格式为 xtdata 标准格式 ``code.exchange``。
+
+    支持两种输入格式：
+        - ``SZ300308`` / ``SH600519`` / ``BJ430047`` → ``300308.SZ`` / ``600519.SH`` / ``430047.BJ``
+        - ``300308.SZ`` / ``600519.SH`` 等已正确格式 → 原样返回
+
+    Args:
+        code: 原始股票代码字符串。
+
+    Returns:
+        标准化后的股票代码，如 ``"300308.SZ"``。
+    """
+    code = code.strip()
+    m = _STOCK_CODE_RE.match(code)
+    if m:
+        return f"{m.group(2)}.{m.group(1)}"
+    return code

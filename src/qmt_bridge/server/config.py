@@ -98,6 +98,19 @@ class Settings:
     scheduler_financial_enabled: bool = True      # 是否启用财务数据增量下载
     scheduler_financial_sectors: str = "沪深A股"  # 财务数据只对 A 股有意义
 
+    # ---- PostgreSQL 配置 ----
+    pg_host: str = "localhost"
+    pg_port: int = 5432
+    pg_user: str = "user"
+    pg_password: str = "123456"
+    pg_database: str = "qmt-bridge"
+
+    # ---- 因子计算配置 ----
+    # factor_names 为空字符串时不计算因子；为 "*" 时计算全部；为逗号分隔列表时计算指定因子
+    factor_sectors: str = "沪深A股"
+    factor_names: str = ""          # "*"=全部, "chip,adjustment"=指定, 空=关闭
+    factor_years: int = 0           # 因子计算时间范围（年），0 表示不限制
+
     @classmethod
     def from_env(cls, env_path: Path | None = None) -> "Settings":
         """从环境变量创建 Settings 实例。
@@ -168,6 +181,18 @@ class Settings:
             scheduler_financial_sectors=os.environ.get(
                 "QMT_BRIDGE_SCHEDULER_FINANCIAL_SECTORS", "沪深A股"
             ),
+            # PostgreSQL 配置
+            pg_host=os.environ.get("QMT_BRIDGE_PG_HOST", "localhost"),
+            pg_port=int(os.environ.get("QMT_BRIDGE_PG_PORT", "5432")),
+            pg_user=os.environ.get("QMT_BRIDGE_PG_USER", "user"),
+            pg_password=os.environ.get("QMT_BRIDGE_PG_PASSWORD", "123456"),
+            pg_database=os.environ.get("QMT_BRIDGE_PG_DATABASE", "qmt-bridge"),
+            # 因子计算配置
+            factor_sectors=os.environ.get(
+                "QMT_BRIDGE_FACTOR_SECTORS", "沪深A股"
+            ),
+            factor_names=os.environ.get("QMT_BRIDGE_FACTOR_NAMES", ""),
+            factor_years=int(os.environ.get("QMT_BRIDGE_FACTOR_YEARS", "0")),
         )
 
 

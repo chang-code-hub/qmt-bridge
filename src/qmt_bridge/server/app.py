@@ -110,6 +110,18 @@ async def _lifespan(app: FastAPI):
     else:
         app.state.notifier_manager = None
 
+    # 初始化因子数据库连接（独立于交易/通知模块，始终尝试连接）
+    try:
+        from .factors.db import create_tables, make_engine
+
+        db_engine = make_engine(settings)
+        create_tables(db_engine)
+        app.state.db_engine = db_engine
+        logger.info("Database initialized")
+    except Exception:
+        logger.exception("Failed to initialize database")
+        app.state.db_engine = None
+
     yield  # --- 应用运行中，以下为关闭阶段 ---
 
     # 停止通知模块，释放后台资源
@@ -166,6 +178,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         cb,
         download,
         etf,
+        factors,
         financial,
         formula,
         futures,
@@ -198,6 +211,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(tabular.router, dependencies=_serial)
     app.include_router(utility.router, dependencies=_serial)
     app.include_router(legacy.router, dependencies=_serial)
+
+    # ------------------------------------------------------------------
+    # 注册因子路由（查询端点不加锁，计算端点加锁）
+    # ------------------------------------------------------------------
+    app.include_router(factors.router)
+    app.include_router(factors.compute_router, dependencies=_serial)
 
     # ------------------------------------------------------------------
     # 注册 WebSocket 端点（实时数据推送）
