@@ -85,6 +85,22 @@ class Factor(ABC):
         return []
 
     @classmethod
+    def fallback_period(cls) -> str | None:
+        """当 ``required_period()`` 数据不可用时回退到的 K 线周期。
+
+        返回 ``None`` 表示不回退。
+        """
+        return None
+
+    @classmethod
+    def fallback_bars(cls) -> int | None:
+        """回退周期下所需的最少 K 线条数。
+
+        返回 ``None`` 表示回退时使用 ``required_bars()`` 的值。
+        """
+        return None
+
+    @classmethod
     def is_bulk_mode(cls) -> bool:
         """是否为全量计算模式。
 

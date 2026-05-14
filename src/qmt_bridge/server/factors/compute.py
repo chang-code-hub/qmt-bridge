@@ -12,7 +12,7 @@ from xtquant import xtdata
 
 from ..helpers import normalize_stock_code
 from .base import Factor, get_factor
-from .db import upsert_factors
+from .db import query_factors, upsert_factors
 
 logger = logging.getLogger("qmt_bridge")
 
@@ -70,6 +70,20 @@ def compute_factors_for_stocks(
     Returns:
         统计信息 dict：``{"total": int, "success": int, "failed": int, "errors": list[str]}``。
     """
+    # 非 adjustment 因子：先检查复权因子是否已同步
+    if factor.name != "adjustment" and stock_codes:
+        adj_records = query_factors(engine, "adjustment", stock_codes, start_time, end_time)
+        existing = {r["stock_code"] for r in adj_records}
+        missing = [s for s in stock_codes if s not in existing]
+        if missing:
+            logger.info("复权因子未同步，优先计算: %s", missing)
+            adj_cls = get_factor("adjustment")
+            if adj_cls is not None:
+                adj_factor = adj_cls()
+                compute_factors_for_stocks(
+                    engine, adj_factor, missing, start_time=start_time, end_time=end_time
+                )
+
     period = factor.required_period()
     total = len(stock_codes)
     success = 0
@@ -96,12 +110,29 @@ def compute_factors_for_stocks(
                 dividend_type="none",
             )
             df = raw.get(stock)
+            actual_period = period
+
+            # 主周期无数据，尝试回退周期
+            if (df is None or df.empty) and factor.fallback_period():
+                fallback = factor.fallback_period()
+                raw = xtdata.get_market_data_ex(
+                    field_list=["time", "open", "high", "low", "close", "volume"],
+                    stock_list=[stock],
+                    period=fallback,
+                    start_time=start_time,
+                    end_time=end_time,
+                    count=-1,
+                    dividend_type="none",
+                )
+                df = raw.get(stock)
+                actual_period = fallback
+
             if df is None or df.empty:
                 logger.warning("因子计算跳过: %s 无数据", stock)
                 continue
 
             # 按日期粒度计算因子（逐日滚动窗口）
-            records = _compute_daily(engine, factor, stock, df)
+            records = _compute_daily(engine, factor, stock, df, actual_period)
             if records:
                 upsert_factors(engine, factor.name, records)
                 success += 1
@@ -132,6 +163,7 @@ def _compute_daily(
     factor: Factor,
     stock_code: str,
     df: pd.DataFrame,
+    period: str | None = None,
 ) -> list[dict]:
     """对单只股票的 DataFrame 计算因子。
 
@@ -140,7 +172,8 @@ def _compute_daily(
     - 分钟线：按交易日分组，每天独立计算
     - 日线：滚动窗口计算
     """
-    period = factor.required_period()
+    if period is None:
+        period = factor.required_period()
 
     # bulk 模式：一次性全量计算
     if factor.is_bulk_mode():
@@ -157,7 +190,11 @@ def _compute_daily(
             ]
         return []
 
-    required_bars = factor.required_bars()
+    # 确定实际需要的 bars 数
+    if period == factor.fallback_period() and factor.fallback_bars() is not None:
+        required_bars = factor.fallback_bars()
+    else:
+        required_bars = factor.required_bars()
 
     # 分钟线：按交易日分组，每天取当天的全部 K 线计算
     if period in ("1m", "5m", "15m", "30m"):

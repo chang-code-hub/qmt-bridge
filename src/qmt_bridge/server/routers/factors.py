@@ -146,6 +146,38 @@ def get_factor_history(
     stock_codes = [s.strip() for s in stocks.split(",")]
     results = query_factors(engine, factor_name, stock_codes, start_date, end_date)
 
+    # 检查缺失或日期范围不完整的股票并触发补充计算
+    from collections import defaultdict
+
+    stock_dates: defaultdict[str, list[str]] = defaultdict(list)
+    for r in results:
+        stock_dates[r["stock_code"]].append(r["trade_date"])
+
+    missing_stocks: list[str] = []
+    for stock_code in stock_codes:
+        dates = sorted(stock_dates.get(stock_code, []))
+        if not dates:
+            missing_stocks.append(stock_code)
+            continue
+        # 最早记录晚于 start_date → 前面有缺失
+        if start_date and dates[0] > start_date:
+            missing_stocks.append(stock_code)
+        # 最晚记录早于 end_date → 后面有缺失
+        elif end_date and dates[-1] < end_date:
+            missing_stocks.append(stock_code)
+
+    if missing_stocks:
+        logger.info(
+            "因子数据缺失，触发补充计算: factor=%s, 股票=%s",
+            factor_name,
+            missing_stocks,
+        )
+        factor = factor_cls()
+        compute_factors_for_stocks(
+            engine, factor, missing_stocks, start_time=start_date, end_time=end_date
+        )
+        results = query_factors(engine, factor_name, stock_codes, start_date, end_date)
+
     # 复权调整
     if dividend_type != "none":
         price_fields = factor_cls.price_fields()

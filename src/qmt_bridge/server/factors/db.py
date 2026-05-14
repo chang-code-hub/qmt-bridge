@@ -140,6 +140,7 @@ def _row_to_dict(table: Table, row) -> dict:
             continue
         factor_data[col_name] = getattr(row, col_name)
     return {
+        "stock_code": row.stock_code,
         "trade_date": trade_date,
         "factor_data": factor_data,
     }

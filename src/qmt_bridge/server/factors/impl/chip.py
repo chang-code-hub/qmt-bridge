@@ -44,6 +44,15 @@ class ChipDistributionFactor(Factor):
         return 120
 
     @classmethod
+    def fallback_period(cls) -> str | None:
+        return "1d"
+
+    @classmethod
+    def fallback_bars(cls) -> int | None:
+        # 日线模式下最少 1 条即可计算筹码分布
+        return 1
+
+    @classmethod
     def db_columns(cls) -> list:
         from sqlalchemy import ARRAY, Column, Float
 
