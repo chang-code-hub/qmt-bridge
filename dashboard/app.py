@@ -57,6 +57,10 @@ st.subheader("系统状态")
 st.markdown("健康检查、版本信息、连接状态")
 st.page_link("pages/7_系统状态.py", label="前往 →")
 
+st.subheader("因子查询")
+st.markdown("因子列表、历史数据、筹码分布")
+st.page_link("pages/8_因子查询.py", label="前往 →")
+
 # ── 快速状态概览 ──────────────────────────────────────────────────
 
 if st.session_state.get("connected"):
