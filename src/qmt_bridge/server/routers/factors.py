@@ -7,6 +7,9 @@
 import logging
 from datetime import datetime, timedelta
 
+import pandas as pd
+from xtquant import xtdata
+
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from ..config import Settings, get_settings
@@ -37,32 +40,52 @@ def list_all_factors():
 _VALID_DIVIDEND_TYPES = {"none", "front", "back", "front_ratio", "back_ratio"}
 
 
-def _build_adj_map(adj_records: list[dict]) -> dict[str, float]:
-    """从除权除息原始字段计算日期 -> cum_factor 映射。
+def _build_adj_map(stock_code: str, start_time: str = "", end_time: str = "") -> dict[str, float]:
+    """从 xtdata 直接获取除权数据，计算日期 -> cum_factor 映射。
 
     基于送转股比例（stock_bonus + stock_gift）计算等比累计复权系数：
         cum_factor *= (1 + stock_bonus + stock_gift)
     相邻日期送转股比例相同时视为同一事件，不重复计算。
     """
-    if not adj_records:
+
+    raw = xtdata.get_divid_factors(stock_code, start_time=start_time, end_time=end_time)
+    if raw is None:
+        return {}
+    if isinstance(raw, pd.DataFrame):
+        df = raw
+    elif isinstance(raw, dict):
+        if stock_code not in raw:
+            return {}
+        df = raw[stock_code]
+    else:
         return {}
 
-    sorted_records = sorted(adj_records, key=lambda r: r["trade_date"])
+    if df is None or df.empty:
+        return {}
+
+    records = []
+    for _, row in df.iterrows():
+        time_val = row.get("time", 0)
+        if hasattr(time_val, "item"):
+            time_val = time_val.item()
+        time_str = str(int(time_val))
+        trade_date = time_str[:8]  # YYYYMMDD
+
+        bonus = float(row.get("stockBonus", 0.0))
+        gift = float(row.get("stockGift", 0.0))
+        records.append({"trade_date": trade_date, "bonus": bonus, "gift": gift})
+
+    records.sort(key=lambda r: r["trade_date"])
+
     adj_map: dict[str, float] = {}
     cum_factor = 1.0
     prev_ratio = (0.0, 0.0)
 
-    for r in sorted_records:
-        data = r["factor_data"]
-        bonus = float(data.get("stock_bonus") or 0.0)
-        gift = float(data.get("stock_gift") or 0.0)
-        current = (bonus, gift)
-
-        # 送转股比例变化 → 新除权事件
-        if current != prev_ratio and (bonus > 0 or gift > 0):
-            cum_factor *= (1.0 + bonus + gift)
+    for r in records:
+        current = (r["bonus"], r["gift"])
+        if current != prev_ratio and (r["bonus"] > 0 or r["gift"] > 0):
+            cum_factor *= (1.0 + r["bonus"] + r["gift"])
             prev_ratio = current
-
         adj_map[r["trade_date"]] = cum_factor
 
     return adj_map
@@ -79,7 +102,7 @@ def _adjust_value(value, ratio: float):
 
 def _apply_adjustment(
     results: list[dict],
-    adj_map: dict[str, float],
+    adj_maps: dict[str, dict[str, float]],
     price_fields: list[str],
     dividend_type: str,
 ):
@@ -89,14 +112,21 @@ def _apply_adjustment(
         - front / front_ratio: 前复权（以最新价格为基准）
         - back / back_ratio: 后复权（以最早价格为基准）
     """
-    if not adj_map or not price_fields:
+    if not adj_maps or not price_fields:
         return
 
-    dates = sorted(adj_map.keys())
-    latest_cum = adj_map[dates[-1]]
-    earliest_cum = adj_map[dates[0]]
-
     for r in results:
+        stock_code = r.get("stock_code")
+        if not stock_code:
+            continue
+        adj_map = adj_maps.get(stock_code, {})
+        if not adj_map:
+            continue
+
+        dates = sorted(adj_map.keys())
+        latest_cum = adj_map[dates[-1]]
+        earliest_cum = adj_map[dates[0]]
+
         date_key = r["trade_date"]
         date_cum = adj_map.get(date_key, 1.0)
         if not date_cum:
@@ -178,13 +208,16 @@ def get_factor_history(
         )
         results = query_factors(engine, factor_name, stock_codes, start_date, end_date)
 
-    # 复权调整
+    # 复权调整：直接从 xtdata 获取除权数据
     if dividend_type != "none":
         price_fields = factor_cls.price_fields()
         if price_fields:
-            adj_records = query_factors(engine, "adjustment", stock_codes, "", "")
-            adj_map = _build_adj_map(adj_records)
-            _apply_adjustment(results, adj_map, price_fields, dividend_type)
+            adj_maps = {}
+            for stock_code in stock_codes:
+                adj_map = _build_adj_map(stock_code, start_date, end_date)
+                if adj_map:
+                    adj_maps[stock_code] = adj_map
+            _apply_adjustment(results, adj_maps, price_fields, dividend_type)
 
     return ok_response(results)
 

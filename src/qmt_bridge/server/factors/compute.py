@@ -12,7 +12,7 @@ from xtquant import xtdata
 
 from ..helpers import normalize_stock_code
 from .base import Factor, get_factor
-from .db import query_factors, upsert_factors
+from .db import upsert_factors
 
 logger = logging.getLogger("qmt_bridge")
 
@@ -70,20 +70,6 @@ def compute_factors_for_stocks(
     Returns:
         统计信息 dict：``{"total": int, "success": int, "failed": int, "errors": list[str]}``。
     """
-    # 非 adjustment 因子：先检查复权因子是否已同步
-    if factor.name != "adjustment" and stock_codes:
-        adj_records = query_factors(engine, "adjustment", stock_codes, start_time, end_time)
-        existing = {r["stock_code"] for r in adj_records}
-        missing = [s for s in stock_codes if s not in existing]
-        if missing:
-            logger.info("复权因子未同步，优先计算: %s", missing)
-            adj_cls = get_factor("adjustment")
-            if adj_cls is not None:
-                adj_factor = adj_cls()
-                compute_factors_for_stocks(
-                    engine, adj_factor, missing, start_time=start_time, end_time=end_time
-                )
-
     period = factor.required_period()
     total = len(stock_codes)
     success = 0

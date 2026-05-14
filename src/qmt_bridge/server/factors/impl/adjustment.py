@@ -30,7 +30,6 @@ def _parse_date(dt) -> date:
     raise TypeError(f"无法解析日期: {dt!r}")
 
 
-@register
 class AdjustmentFactor(Factor):
     """复权因子。
 
