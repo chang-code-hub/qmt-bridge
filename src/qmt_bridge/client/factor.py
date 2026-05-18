@@ -11,6 +11,8 @@
 
 from typing import Optional
 
+import numpy as np
+
 
 class FactorMixin:
     """因子数据客户端方法集合。"""
@@ -94,15 +96,21 @@ class FactorMixin:
         self,
         stock: str,
         date: str = "",
+        start_date: str = "",
+        end_date: str = "",
         dividend_type: str = "none",
     ) -> dict:
-        """获取单只股票的最新筹码分布数据。
+        """获取单只股票的筹码分布数据。
 
-        若未指定 date，返回该股票最新日期的筹码分布。
+        - 指定 ``date``：返回该日期的单日筹码分布。
+        - 指定 ``start_date`` + ``end_date``：返回该日期范围内的累计筹码分布。
+        - 均未指定：返回最新日期的单日筹码分布。
 
         Args:
             stock: 股票代码，如 ``"000001.SZ"``
-            date: 指定日期 ``"20230101"``，为空则取最新
+            date: 指定单日 ``"20230101"``，优先级低于 start_date/end_date
+            start_date: 累计起始日期 ``"20230101"``
+            end_date: 累计结束日期 ``"20230101"``
             dividend_type: 除权类型
 
         Returns:
@@ -110,18 +118,89 @@ class FactorMixin:
             ``volumes``（各档位筹码量）、``avg_cost``（平均成本）、
             ``max_volume_price``（最大筹码价格）、``concentration``（集中度）等
         """
-        records = self.get_factor_history(
-            "chip",
-            [stock],
-            start_date=date,
-            end_date=date,
-            dividend_type=dividend_type,
-        )
+        if start_date and end_date:
+            records = self.get_factor_history(
+                "chip",
+                [stock],
+                start_date=start_date,
+                end_date=end_date,
+                dividend_type=dividend_type,
+            )
+        else:
+            records = self.get_factor_history(
+                "chip",
+                [stock],
+                start_date=date,
+                end_date=date,
+                dividend_type=dividend_type,
+            )
+
         if not records:
             return {}
-        # 取最新一条
-        latest = max(records, key=lambda r: r.get("trade_date", ""))
-        return latest.get("factor_data", {})
+
+        if not (start_date and end_date) or len(records) <= 1:
+            latest = max(records, key=lambda r: r.get("trade_date", ""))
+            return latest.get("factor_data", {})
+
+        return self._accumulate_chip_data(records)
+
+    @staticmethod
+    def _accumulate_chip_data(records: list[dict]) -> dict:
+        """将多日的筹码分布数据累计到统一价格网格上。
+
+        收集所有日期的 (价格中点, 成交量) 数据点，重新在 50 档全局直方图上
+        分档，并重算平均成本、最大筹码价格、集中度等统计量。
+        """
+        all_centers = []
+        all_weights = []
+
+        for rec in records:
+            fd = rec.get("factor_data", {})
+            pl = fd.get("price_levels", [])
+            vl = fd.get("volumes", [])
+            if not pl or not vl:
+                continue
+            bin_width = pl[1] - pl[0] if len(pl) > 1 else 1.0
+            for p, v in zip(pl, vl):
+                if v > 0:
+                    all_centers.append(p + bin_width / 2)
+                    all_weights.append(v)
+
+        if not all_weights:
+            return {}
+
+        hist, edges = np.histogram(
+            all_centers,
+            bins=50,
+            weights=all_weights,
+        )
+
+        price_levels = edges[:-1].tolist()
+        volumes = hist.tolist()
+        total_volume = float(sum(all_weights))
+
+        weighted_sum = sum(p * v for p, v in zip(price_levels, volumes))
+        avg_cost = weighted_sum / total_volume if total_volume > 0 else 0.0
+
+        max_idx = int(np.argmax(hist))
+        max_volume_price = price_levels[max_idx] if max_idx < len(price_levels) else 0.0
+
+        cumsum = np.cumsum(volumes)
+        cumsum_norm = cumsum / cumsum[-1] if cumsum[-1] > 0 else cumsum
+        idx_05 = int(np.searchsorted(cumsum_norm, 0.05))
+        idx_95 = int(np.searchsorted(cumsum_norm, 0.95))
+        price_05 = float(edges[idx_05]) if idx_05 < len(edges) else 0.0
+        price_95 = float(edges[idx_95]) if idx_95 < len(edges) else 0.0
+        concentration = (price_95 - price_05) / avg_cost if avg_cost > 0 else 0.0
+
+        return {
+            "price_levels": price_levels,
+            "volumes": volumes,
+            "avg_cost": float(avg_cost),
+            "max_volume_price": float(max_volume_price),
+            "concentration": float(concentration),
+            "total_volume": total_volume,
+        }
 
     def plot_chip_distribution(
         self,
@@ -156,7 +235,7 @@ class FactorMixin:
         except ImportError as exc:
             raise ImportError("绘制筹码分布图需要安装 matplotlib: pip install matplotlib") from exc
 
-        chip = self.get_chip_distribution(stock, date, dividend_type)
+        chip = self.get_chip_distribution(stock, date, dividend_type=dividend_type)
         if not chip:
             raise ValueError(f"未找到 {stock} 的筹码分布数据，请先调用 compute_factor('chip', ['{stock}']) 计算")
 
