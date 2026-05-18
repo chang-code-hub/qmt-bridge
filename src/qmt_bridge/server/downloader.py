@@ -66,8 +66,8 @@ FINANCIAL_MIN_RECORDS = 8
 DEFAULT_SECTORS = "沪深A股,沪深ETF,沪深指数"
 
 # 下载模式
-# 1 = supply_history_data2, 2 = download_history_data2
-DOWNLOAD_MODE = 1
+# 1 = supply_history_data2, 2 = download_history_data, 3 = download_history_data2
+DOWNLOAD_MODE = 2
 
 
 # ── 结果数据类 ────────────────────────────────────────────────
@@ -128,7 +128,7 @@ class DownloadSchedulerState:
 
 def make_batches(lst: list, size: int) -> list[list]:
     """将列表按 size 切分为子列表。"""
-    return [lst[i : i + size] for i in range(0, len(lst), size)]
+    return [lst[i: i + size] for i in range(0, len(lst), size)]
 
 
 def wait_future(future, timeout: float) -> None:
@@ -175,13 +175,13 @@ def get_stock_list(sectors: str = DEFAULT_SECTORS) -> list[str]:
 # ── 核心下载函数 ──────────────────────────────────────────────
 
 def download_single_kline(
-    client,
-    code: str,
-    period: str,
-    start_time: str = "",
-    end_time: str = "",
-    incrementally: bool | None = None,
-    timeout: float | None = None,
+        client,
+        code: str,
+        period: str,
+        start_time: str = "",
+        end_time: str = "",
+        incrementally: bool | None = None,
+        timeout: float | None = None,
 ) -> str:
     """根据 DOWNLOAD_MODE 下载单只股票 K 线。
 
@@ -208,6 +208,18 @@ def download_single_kline(
         incrementally = not bool(start_time)
 
     if DOWNLOAD_MODE == 2:
+        try:
+            xtdata.download_history_data(
+                stock_code=code, period=period, start_time=start_time, end_time=end_time,
+                incrementally=incrementally,
+            )
+            return "ok"
+        except Exception as exc:
+            err_msg = str(exc)
+            if "连接断开" in err_msg:
+                return "disconnected"
+            return f"error: {err_msg}"
+    elif DOWNLOAD_MODE == 3:
         try:
             xtdata.download_history_data2(
                 [code], period, start_time, end_time,
@@ -280,11 +292,11 @@ def download_single_kline(
 # ── 批量下载 (替代 xtdata.download_history_data2) ────────────
 
 def download_history_data2_safe(
-    stock_list: list[str],
-    period: str = "1d",
-    start_time: str = "",
-    end_time: str = "",
-    callback: Callable[[dict], None] | None = None,
+        stock_list: list[str],
+        period: str = "1d",
+        start_time: str = "",
+        end_time: str = "",
+        callback: Callable[[dict], None] | None = None,
 ) -> dict[str, str]:
     """替代 xtdata.download_history_data2，逐只调用 download_single_kline。
 
@@ -337,7 +349,7 @@ def probe_local_dates(stocks: list[str], period: str) -> dict[str, str]:
     """
     result: dict[str, str] = {}
     for i in range(0, len(stocks), PROBE_BATCH_SIZE):
-        batch = stocks[i : i + PROBE_BATCH_SIZE]
+        batch = stocks[i: i + PROBE_BATCH_SIZE]
         try:
             data = xtdata.get_local_data(
                 field_list=[], stock_list=batch,
@@ -357,7 +369,7 @@ def probe_local_dates(stocks: list[str], period: str) -> dict[str, str]:
 
 
 def probe_financial_cache(
-    stocks: list[str], table_list: list[str],
+        stocks: list[str], table_list: list[str],
 ) -> tuple[set[str], int, int]:
     """探测哪些股票已有完整且新鲜的本地财务数据缓存。
 
@@ -400,8 +412,8 @@ def probe_financial_cache(
 
 
 def group_stocks_by_date(
-    stocks: list[str],
-    local_dates: dict[str, str],
+        stocks: list[str],
+        local_dates: dict[str, str],
 ) -> list[tuple[str, list[str]]]:
     """按本地缓存最新日期分组。
 
@@ -422,14 +434,14 @@ def group_stocks_by_date(
 # ── K 线批量下载（无 tqdm） ──────────────────────────────────
 
 def _run_kline_downloads(
-    client,
-    stocks: list[str],
-    stock_indices: list[int],
-    period: str,
-    start_time: str,
-    end_time: str,
-    incrementally: bool | None,
-    timeout: int,
+        client,
+        stocks: list[str],
+        stock_indices: list[int],
+        period: str,
+        start_time: str,
+        end_time: str,
+        incrementally: bool | None,
+        timeout: int,
 ) -> KlineDownloadResult:
     """逐只下载 K 线数据（直接调用 client.supply_history_data2）。"""
     res = KlineDownloadResult()
@@ -466,9 +478,9 @@ def _run_kline_downloads(
 # ── 增量下载编排（调度器用） ──────────────────────────────────
 
 def download_kline_incremental(
-    stocks: list[str],
-    period: str,
-    max_retries: int = 2,
+        stocks: list[str],
+        period: str,
+        max_retries: int = 2,
 ) -> IncrementalResult:
     """精准增量下载一个周期的 K 线数据（Mode C）。
 
@@ -579,12 +591,12 @@ def download_kline_incremental(
 
 
 def download_financial_incremental(
-    stocks: list[str],
-    table_list: list[str] | None = None,
-    batch_size: int = 20,
-    timeout: int = 120,
-    delay: float = 0.2,
-    max_retries: int = 2,
+        stocks: list[str],
+        table_list: list[str] | None = None,
+        batch_size: int = 20,
+        timeout: int = 120,
+        delay: float = 0.2,
+        max_retries: int = 2,
 ) -> dict[str, int]:
     """财务数据增量下载编排（调度器用）。
 
@@ -649,11 +661,11 @@ def download_financial_incremental(
 
 
 def _run_financial_batches(
-    batches: list[list[str]],
-    batch_indices: list[int],
-    table_list: list[str],
-    timeout: int,
-    delay: float,
+        batches: list[list[str]],
+        batch_indices: list[int],
+        table_list: list[str],
+        timeout: int,
+        delay: float,
 ) -> tuple[int, int, int, list[int]]:
     """执行一轮财务数据批次下载。
 
