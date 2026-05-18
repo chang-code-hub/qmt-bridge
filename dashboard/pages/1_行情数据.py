@@ -58,7 +58,8 @@ if st.button("查询 K 线", key="btn_kline"):
             if not isinstance(df, pd.DataFrame):
                 df = pd.DataFrame(df)
 
-            x_axis = df["time"] if "time" in df.columns else df.index
+            _s = df['index'].astype(str)
+            x_axis = _s.str[:4] + "-" + _s.str[4:6] + "-" + _s.str[6:]
             current_price = float(df["close"].iloc[-1]) if "close" in df.columns else None
 
             # ── 构建复合图表: K线 + 成交量 + 筹码分布 ──────────────────
