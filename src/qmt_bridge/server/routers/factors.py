@@ -14,8 +14,9 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 
 from ..config import Settings, get_settings
 from ..factors import compute_factors_for_stocks, get_factor, list_factors, make_engine, query_factors
-from ..helpers import ok_response
+from ..helpers import get_expected_last_trade_date, ok_response
 from ..models import FactorComputeRequest
+from collections import defaultdict
 
 logger = logging.getLogger("qmt_bridge")
 
@@ -176,8 +177,10 @@ def get_factor_history(
     stock_codes = [s.strip() for s in stocks.split(",")]
     results = query_factors(engine, factor_name, stock_codes, start_date, end_date)
 
+    # 确定有效的截止日期：用户未传 end_date 时，使用预期最后交易日
+    effective_end_date = end_date or get_expected_last_trade_date()
+
     # 检查缺失或日期范围不完整的股票并触发补充计算
-    from collections import defaultdict
 
     stock_dates: defaultdict[str, list[str]] = defaultdict(list)
     for r in results:
@@ -192,8 +195,8 @@ def get_factor_history(
         # 最早记录晚于 start_date → 前面有缺失
         if start_date and dates[0] > start_date:
             missing_stocks.append(stock_code)
-        # 最晚记录早于 end_date → 后面有缺失
-        elif end_date and dates[-1] < end_date:
+        # 最晚记录早于 effective_end_date → 后面有缺失
+        elif dates[-1] < effective_end_date:
             missing_stocks.append(stock_code)
 
     if missing_stocks:
@@ -204,7 +207,7 @@ def get_factor_history(
         )
         factor = factor_cls()
         compute_factors_for_stocks(
-            engine, factor, missing_stocks, start_time=start_date, end_time=end_date
+            engine, factor, missing_stocks, start_time=start_date, end_time=effective_end_date
         )
         results = query_factors(engine, factor_name, stock_codes, start_date, end_date)
 

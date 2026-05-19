@@ -13,6 +13,7 @@ from xtquant import xtdata
 from ..helpers import normalize_stock_code
 from .base import Factor, get_factor
 from .db import upsert_factors
+from ..downloader import download_history_data2_safe
 
 logger = logging.getLogger("qmt_bridge")
 
@@ -47,6 +48,58 @@ def _parse_date(dt) -> date:
         return dt.date()
 
     raise TypeError(f"无法解析日期: {dt!r}")
+
+
+def _ensure_kline_data(
+    stock: str,
+    period: str,
+    start_time: str,
+    end_time: str,
+) -> pd.DataFrame | None:
+    """获取单只股票K线数据，若最新日期不完整则自动下载补全。
+
+    Returns:
+        DataFrame 或 None（无数据时）。
+    """
+    raw = xtdata.get_market_data_ex(
+        field_list=["time", "open", "high", "low", "close", "volume"],
+        stock_list=[stock],
+        period=period,
+        start_time=start_time,
+        end_time=end_time,
+        count=-1,
+        dividend_type="none",
+    )
+    df = raw.get(stock)
+
+    if df is None or df.empty:
+        return df
+
+    from ..helpers import get_expected_last_trade_date
+    expected_end = end_time or get_expected_last_trade_date()
+    last_ts = df.index[-1]
+    if isinstance(last_ts, pd.Timestamp):
+        last_date = last_ts.strftime("%Y%m%d")
+    else:
+        last_date = last_ts[0:8]
+
+    if last_date < expected_end:
+        logger.info(
+            "因子计算K线数据不完整，触发下载: %s %s", period, stock
+        )
+        download_history_data2_safe([stock], period=period, start_time=start_time, end_time=end_time)
+        raw = xtdata.get_market_data_ex(
+            field_list=["time", "open", "high", "low", "close", "volume"],
+            stock_list=[stock],
+            period=period,
+            start_time=start_time,
+            end_time=end_time,
+            count=-1,
+            dividend_type="none",
+        )
+        df = raw.get(stock)
+
+    return df
 
 
 def compute_factors_for_stocks(
@@ -86,31 +139,13 @@ def compute_factors_for_stocks(
     for stock in stock_codes:
         stock = normalize_stock_code(stock)
         try:
-            raw = xtdata.get_market_data_ex(
-                field_list=["time", "open", "high", "low", "close", "volume"],
-                stock_list=[stock],
-                period=period,
-                start_time=start_time,
-                end_time=end_time,
-                count=-1,
-                dividend_type="none",
-            )
-            df = raw.get(stock)
+            df = _ensure_kline_data(stock, period, start_time, end_time)
             actual_period = period
 
             # 主周期无数据，尝试回退周期
             if (df is None or df.empty) and factor.fallback_period():
                 fallback = factor.fallback_period()
-                raw = xtdata.get_market_data_ex(
-                    field_list=["time", "open", "high", "low", "close", "volume"],
-                    stock_list=[stock],
-                    period=fallback,
-                    start_time=start_time,
-                    end_time=end_time,
-                    count=-1,
-                    dividend_type="none",
-                )
-                df = raw.get(stock)
+                df = _ensure_kline_data(stock, fallback, start_time, end_time)
                 actual_period = fallback
 
             if df is None or df.empty:

@@ -13,12 +13,20 @@
 - xtdata.get_transactioncount()   — 获取逐笔成交计数
 """
 
+import logging
+from datetime import datetime
+
+import pandas as pd
 from fastapi import APIRouter, Query
 from xtquant import xtdata
 
-from ..helpers import _dataframe_dict_to_records, _numpy_to_python
+from ..downloader import download_history_data2_safe
+from ..helpers import _dataframe_dict_to_records, _numpy_to_python, get_expected_last_trade_date
+
+from ..helpers import _market_data_to_records
 
 router = APIRouter(prefix="/api/market", tags=["market"])
+logger = logging.getLogger("qmt_bridge")
 
 # 主要指数列表（用于 /indices 端点快速查询大盘行情）
 MAJOR_INDICES = [
@@ -30,6 +38,118 @@ MAJOR_INDICES = [
     "000905.SH",  # 中证500
     "000852.SH",  # 中证1000
 ]
+
+
+# ── 自动同步辅助函数 ──────────────────────────────────────────
+
+def _get_latest_date_from_df(df) -> str:
+    """从 DataFrame 索引提取最新日期字符串（YYYYMMDD）。"""
+    if df is None or not isinstance(df, pd.DataFrame) or df.empty:
+        return ""
+    last_ts = df.index[-1]
+    if isinstance(last_ts, (int, float)):
+        dt = datetime.fromtimestamp(last_ts / 1000)
+    else:
+        dt = pd.Timestamp(last_ts).to_pydatetime()
+    return dt.strftime("%Y%m%d")
+
+
+def _get_latest_date_from_market_data(raw: dict, stock: str) -> str:
+    """从 get_market_data 返回的 {field: DataFrame} 中提取某只股票的最新日期。"""
+    latest = ""
+    for field_df in raw.values():
+        if not isinstance(field_df, pd.DataFrame) or stock not in field_df.index:
+            continue
+        if len(field_df.columns) == 0:
+            continue
+        last_ts = field_df.columns[-1]
+        if isinstance(last_ts, (int, float)):
+            dt = datetime.fromtimestamp(last_ts / 1000)
+        else:
+            dt = pd.Timestamp(last_ts).to_pydatetime()
+        date_str = dt.strftime("%Y%m%d")
+        if date_str > latest:
+            latest = date_str
+    return latest
+
+
+def _is_market_data_format(raw: dict, stock_list: list[str]) -> bool:
+    """判断 raw 是否为 get_market_data 返回的 {field: DataFrame} 格式。
+
+    与 {stock: DataFrame} 的区别：前者 DataFrame 的 index 是字段名/时间，
+    后者 index 是股票代码。
+    """
+    if not raw:
+        return False
+    first_val = next(iter(raw.values()))
+    if not isinstance(first_val, pd.DataFrame) or first_val.empty:
+        return False
+    # 若第一个 index 在 stock_list 中，则是 {stock: DataFrame} 格式
+    return str(first_val.index[0]) not in stock_list
+
+
+def _check_and_sync_data(
+    raw: dict,
+    stock_list: list[str],
+    period: str,
+    end_time: str = "",
+    query_fn=None,
+    **query_kwargs,
+) -> dict:
+    """检查数据完整性，缺失时自动下载并重新获取。
+
+    Args:
+        raw: xtdata 返回数据。支持两种格式：
+            - {stock_code: DataFrame}（get_market_data_ex / get_local_data）
+            - {field: DataFrame}（get_market_data，DataFrame index 为股票代码）
+        stock_list: 查询的股票代码列表。
+        period: K 线周期。
+        end_time: 用户传入的结束时间，为空表示查询到最新。
+        query_fn: 自定义重新查询函数，为 None 时默认使用 ``xtdata.get_local_data``。
+        **query_kwargs: 重新查询时传给 ``xtdata.get_local_data`` 的额外参数
+            （如 start_time、count、dividend_type、fill_data 等）。
+
+    Returns:
+        补全后的 raw 字典。
+    """
+    expected_end = get_expected_last_trade_date()
+
+    # 若用户指定了结束时间且早于预期最后交易日，不触发自动同步
+    if end_time and end_time < expected_end:
+        return raw
+
+    is_md_fmt = _is_market_data_format(raw, stock_list)
+
+    missing_stocks: list[str] = []
+    for stock in stock_list:
+        if is_md_fmt:
+            latest_date = _get_latest_date_from_market_data(raw, stock)
+        else:
+            df = raw.get(stock)
+            latest_date = _get_latest_date_from_df(df)
+        if not latest_date or latest_date < expected_end:
+            missing_stocks.append(stock)
+
+    if missing_stocks:
+        logger.info(
+            "行情数据不完整，触发下载: period=%s, expected=%s, 股票=%s",
+            period,
+            expected_end,
+            missing_stocks,
+        )
+        download_history_data2_safe(missing_stocks, period=period)
+        if query_fn is not None:
+            raw = query_fn()
+        else:
+            # 重新从本地读取补全后的数据，保留原始查询参数
+            raw = xtdata.get_local_data(
+                field_list=[],
+                stock_list=stock_list,
+                period=period,
+                **query_kwargs,
+            )
+
+    return raw
 
 
 @router.get("/full_tick")
@@ -105,6 +225,11 @@ def get_market_data_ex(
         dividend_type=dividend_type,
         fill_data=fill_data,
     )
+    raw = _check_and_sync_data(
+        raw, stock_list, period,
+        start_time=start_time, end_time=end_time, count=count,
+        dividend_type=dividend_type, fill_data=fill_data,
+    )
     return {"data": _dataframe_dict_to_records(raw)}
 
 
@@ -147,6 +272,11 @@ def get_local_data(
         dividend_type=dividend_type,
         fill_data=fill_data,
     )
+    raw = _check_and_sync_data(
+        raw, stock_list, period,
+        start_time=start_time, end_time=end_time, count=count,
+        dividend_type=dividend_type, fill_data=fill_data,
+    )
     return {"data": _dataframe_dict_to_records(raw)}
 
 
@@ -171,6 +301,16 @@ def get_divid_factors(
     底层调用: xtdata.get_divid_factors(stock, start_time=..., end_time=...)
     """
     raw = xtdata.get_divid_factors(stock, start_time=start_time, end_time=end_time)
+
+    # 自动同步：若数据为空，尝试下载该股票日线后重新获取
+    if raw is None or (isinstance(raw, pd.DataFrame) and raw.empty):
+        logger.info("除权因子数据为空，尝试同步: %s", stock)
+        try:
+            xtdata.download_history_data(stock, period="1d")
+        except Exception as exc:
+            logger.warning("除权因子同步下载失败 %s: %s", stock, exc)
+        raw = xtdata.get_divid_factors(stock, start_time=start_time, end_time=end_time)
+
     return {"stock": stock, "data": _numpy_to_python(raw)}
 
 
@@ -210,7 +350,6 @@ def get_market_data(
 
     底层调用: xtdata.get_market_data(field_list=..., stock_list=..., ...)
     """
-    from ..helpers import _market_data_to_records
 
     stock_list = [s.strip() for s in stocks.split(",")]
     field_list = [f.strip() for f in fields.split(",")]
@@ -223,6 +362,19 @@ def get_market_data(
         count=count,
         dividend_type=dividend_type,
         fill_data=fill_data,
+    )
+    raw = _check_and_sync_data(
+        raw, stock_list, period, end_time,
+        query_fn=lambda: xtdata.get_market_data(
+            field_list=field_list,
+            stock_list=stock_list,
+            period=period,
+            start_time=start_time,
+            end_time=end_time,
+            count=count,
+            dividend_type=dividend_type,
+            fill_data=fill_data,
+        ),
     )
     records = _market_data_to_records(raw, stock_list, field_list)
     return {"data": records}
@@ -272,6 +424,11 @@ def get_market_data3(
         dividend_type=dividend_type,
         fill_data=fill_data,
     )
+    raw = _check_and_sync_data(
+        raw, stock_list, period,
+        start_time=start_time, end_time=end_time, count=count,
+        dividend_type=dividend_type, fill_data=fill_data,
+    )
     return {"data": _dataframe_dict_to_records(raw)}
 
 
@@ -296,6 +453,13 @@ def get_full_kline(
     底层调用: xtdata.get_full_kline(stock, period=..., ...)
     """
     raw = xtdata.get_full_kline(stock, period=period, start_time=start_time, end_time=end_time)
+    # full_kline 返回单只股票的 DataFrame，包装为 dict 以复用自动同步逻辑
+    raw_wrapper = {stock: raw} if isinstance(raw, pd.DataFrame) else {}
+    raw_wrapper = _check_and_sync_data(
+        raw_wrapper, [stock], period,
+        start_time=start_time, end_time=end_time,
+    )
+    raw = raw_wrapper.get(stock)
     return {"stock": stock, "data": _numpy_to_python(raw)}
 
 

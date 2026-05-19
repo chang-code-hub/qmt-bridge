@@ -10,8 +10,11 @@ xtdata 的行情查询接口（如 get_market_data / get_market_data_ex / get_fi
 本模块的函数负责将这些数据统一转换为可序列化的 Python 原生类型。
 """
 
+from datetime import datetime, time as dt_time
+
 import numpy as np
 import pandas as pd
+from xtquant import xtdata
 
 
 def _numpy_to_python(obj):
@@ -222,3 +225,48 @@ def normalize_stock_code(code: str) -> str:
     if m:
         return f"{m.group(2)}.{m.group(1)}"
     return code
+
+
+def _parse_timestamp_to_date_str(ts) -> str:
+    """将 xtdata 返回的时间戳转为 ``YYYYMMDD`` 字符串。"""
+    if isinstance(ts, (int, float)):
+        dt = datetime.fromtimestamp(ts / 1000)
+    else:
+        dt = pd.Timestamp(ts).to_pydatetime()
+    return dt.strftime("%Y%m%d")
+
+
+def get_expected_last_trade_date(market: str = "SH") -> str:
+    """获取数据应完整覆盖到的最近交易日。
+
+    规则：
+        - 若今天**不是**交易日，返回 xtdata 记录的最近交易日；
+        - 若今天**是**交易日但当前时间 < 15:00，返回前一个交易日；
+        - 若今天**是**交易日且已过 15:00，返回今天。
+
+    该函数用于判断本地缓存数据是否"完整"——即是否已覆盖到最新可用交易日。
+
+    Args:
+        market: 市场代码，默认 ``"SH"``（上海）。
+
+    Returns:
+        ``YYYYMMDD`` 格式的最近交易日字符串。
+    """
+    now = datetime.now()
+    today_str = now.strftime("%Y%m%d")
+
+    # 判断今天是否为交易日
+    raw = xtdata.get_trading_dates(market, start_time=today_str, end_time=today_str)
+    is_trading_today = len(_numpy_to_python(raw)) > 0
+
+    if is_trading_today and now.time() < dt_time(15, 0):
+        # 今天是交易日但尚未收盘，返回前一个交易日
+        raw_prev = xtdata.get_trading_dates(market, end_time=today_str, count=2)
+        prev_dates = _numpy_to_python(raw_prev)
+        if len(prev_dates) >= 2:
+            return _parse_timestamp_to_date_str(prev_dates[-2])
+        # fallback：返回 xtdata 记录的最近交易日
+
+    # 返回 xtdata 的最近交易日（已收盘或今天非交易日）
+    ts = xtdata.get_market_last_trade_date(market)
+    return _parse_timestamp_to_date_str(ts)
