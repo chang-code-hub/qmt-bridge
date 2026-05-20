@@ -16,7 +16,7 @@ class ChipDistributionFactor(Factor):
 
     算法说明：
     1. 遍历每根 K 线，将该 bar 的成交量均匀分布到 ``[low, high]`` 价格区间（每根 bar 内分 10 档）。
-    2. 对所有 bar 的价格-成交量点做全局加权直方图（默认 50 档）。
+    2. 对所有 bar 的价格-成交量点做全局加权直方图（默认 100 档）。
     3. 计算平均成本、最大筹码价格、90% 集中度等统计量。
 
     输出字段：
@@ -32,7 +32,7 @@ class ChipDistributionFactor(Factor):
     description = "筹码分布：基于历史 K 线成交量估算各价格位的持仓成本分布"
 
     INTRA_BAR_BINS = 10   # 单根 K 线内部分档数
-    GLOBAL_BINS = 50      # 全局直方图分档数
+    GLOBAL_BINS = 100      # 全局直方图分档数
 
     @classmethod
     def required_period(cls) -> str:

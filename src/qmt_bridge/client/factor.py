@@ -148,7 +148,7 @@ class FactorMixin:
     def _accumulate_chip_data(records: list[dict]) -> dict:
         """将多日的筹码分布数据累计到统一价格网格上。
 
-        收集所有日期的 (价格中点, 成交量) 数据点，重新在 50 档全局直方图上
+        收集所有日期的 (价格中点, 成交量) 数据点，重新在 100 档全局直方图上
         分档，并重算平均成本、最大筹码价格、集中度等统计量。
         """
         all_centers = []
@@ -171,7 +171,7 @@ class FactorMixin:
 
         hist, edges = np.histogram(
             all_centers,
-            bins=50,
+            bins=100,
             weights=all_weights,
         )
 

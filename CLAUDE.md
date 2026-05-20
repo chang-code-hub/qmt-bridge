@@ -87,3 +87,8 @@ just build                # 构建 wheel
 3. 经诊断脚本 `scripts/diagnose_bson.py` 确认只有 `get_local_data` / `get_market_data_ex` 崩溃
 4. 经 `scripts/find_bad_cache.py` 排除了所有磁盘文件（datadir、共享内存、IPC 队列）
 5. 最终确认重启 QMT 后问题消失，属于 QMT 服务端内存状态损坏
+
+
+## 服务端 API 文档
+
+[服务端 API](SERVER_API.md)
