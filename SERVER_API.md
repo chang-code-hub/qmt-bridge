@@ -227,6 +227,52 @@ QMT Bridge 将 miniQMT（xtquant）的行情与交易能力通过 HTTP / WebSock
 | `/api/factors/{factor_name}` | GET | `stocks`, `start_date`, `end_date`, `dividend_type="none"` | 查询因子历史数据（支持复权） |
 | `/api/factors/compute` | POST | `{factor_name, stock_codes, start_time, end_time, years=0}` | 手动触发因子计算 |
 
+### 17.1 筹码分布因子 `chip`
+
+- **因子名**: `chip`
+- **说明**: 基于历史 K 线成交量估算各价格位的持仓成本分布。遍历每根 K 线将成交量均匀分布到 `[low, high]` 区间，再做全局加权直方图，输出支撑/压力位、平均成本、获利盘比例等统计量。
+- **计算周期**: 首选 `1m`（最少 120 根），数据不可用时回退到 `1d`（最少 1 根）。
+- **复权字段**: `price_levels` / `avg_cost` / `max_volume_price`
+
+**响应字段** (`factor_data` 内部结构)：
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `price_levels` | `list[float]` | 全局直方图各档位价格中心（50 档） |
+| `volumes` | `list[float]` | 各档位对应的筹码量 |
+| `avg_cost` | `float` | 加权平均成本 |
+| `max_volume_price` | `float` | 筹码峰值（最大成交量档位）对应价格 |
+| `concentration` | `float` | 90% 筹码集中度，计算公式 `(P95 - P05) / avg_cost` |
+| `total_volume` | `float` | 统计区间总成交量 |
+
+**调用示例**:
+
+```bash
+curl "http://localhost:8080/api/factors/chip?stocks=000001.SZ&start_date=20260101&end_date=20260131"
+```
+
+**返回示例**:
+
+```json
+{
+  "code": 0,
+  "message": "ok",
+  "data": [
+    {
+      "stock_code": "000001.SZ",
+      "trade_date": "20260115",
+      "factor_data": {
+        "price_levels": [10.12, 10.34, 10.56, ...],
+        "volumes": [1200.5, 3400.0, 2100.3, ...],
+        "avg_cost": 10.45,
+        "max_volume_price": 10.34,
+        "concentration": 0.18,
+        "total_volume": 150000.0
+      }
+    }
+  ]
+}
+```
 ---
 
 ## 十八、交易接口（需 `X-API-Key` 认证）
